@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Any
 
 import pygame
@@ -5,19 +6,15 @@ import torch
 from rnntoolkit.flow_fields.flow_field import FlowField
 from rnntoolkit.flow_fields.flow_field_finder import FlowFieldFinder
 from rnntoolkit.flow_fields.flow_field_finder_base import FlowFieldFinderBase
+from rnntoolkit.flow_visualizer.axes_panel import AxesPreferencesPanel
+from rnntoolkit.flow_visualizer.axis_selection import AxisSelectionMixin
 from rnntoolkit.flow_visualizer.visualizer_base import FlowFieldVisualizerBase
 
 pygame.init()
 
 
-class FlowFieldVisualizer(FlowFieldVisualizerBase):
-    """Interactive two-dimensional viewer for an RNN's flow field.
-
-    This class asks ``FlowFieldFinder`` to project hidden states and calculate
-    motion, maintains the coordinate view during pan/zoom operations, and draws
-    both the vector field and its controls. Expensive flow results are cached
-    until navigation or a setting marks them as dirty.
-    """
+class FlowFieldVisualizer(AxisSelectionMixin, FlowFieldVisualizerBase):
+    """Interactive two-dimensional viewer for an RNN's flow field."""
 
     def __init__(
         self,
@@ -30,8 +27,25 @@ class FlowFieldVisualizer(FlowFieldVisualizerBase):
         fit_states: torch.Tensor | None = None,
         axes: torch.Tensor | None = None,
         flow_type: str = "nonlinear",
+        axis_labels: Sequence[str] | None = None,
     ) -> None:
-        """Initialize the concrete RNNToolkit flow-field visualizer."""
+        """Initialize the concrete RNNToolkit flow-field visualizer.
+
+        Args:
+            rnn: Recurrent module whose hidden dynamics will be visualized.
+            num_points: Number of grid samples along each displayed axis.
+            x_offset: Initial half-width of the x-axis data window.
+            y_offset: Initial half-width of the y-axis data window.
+            x_center: Initial x-axis center in reduced coordinates.
+            y_center: Initial y-axis center in reduced coordinates.
+            fit_states: Hidden states used to fit PCA when ``axes`` is omitted.
+            axes: Optional axis bank with shape ``[N, hidden_size]``, where
+                ``N >= 2``. The first two axes are selected initially.
+            flow_type: Either ``"nonlinear"`` or ``"linear"``.
+            axis_labels: Optional display names for the axes. Its length must
+                equal ``N``. Defaults to ``axis_1``, ``axis_2``, and so on.
+        """
+        selected_axes = self._initialize_axes(axes, axis_labels)
         super().__init__(
             rnn,
             num_points,
@@ -40,13 +54,14 @@ class FlowFieldVisualizer(FlowFieldVisualizerBase):
             x_center,
             y_center,
             fit_states,
-            axes,
+            selected_axes,
             flow_type,
         )
+        self.preferences_panel = AxesPreferencesPanel(self.pref_btn, self)
 
     def build_finder(self) -> FlowFieldFinder:
-        """Build the RNNToolkit finder for this visualizer."""
-        finder = FlowFieldFinder(
+        """Build a finder using the currently selected two-axis basis."""
+        return FlowFieldFinder(
             rnn=self.rnn,
             num_points=self.num_points,
             x_offset=self.x_offset,
@@ -57,7 +72,6 @@ class FlowFieldVisualizer(FlowFieldVisualizerBase):
             axes=self.axes,
             follow_traj=False,
         )
-        return finder
 
     def prepare_data(
         self,
@@ -66,10 +80,11 @@ class FlowFieldVisualizer(FlowFieldVisualizerBase):
         delta_inputs: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Flatten RNNToolkit inputs and states into page-aligned samples."""
-        if delta_inputs is not None:
-            delta_inp_nxd = FlowFieldFinderBase._nxd(delta_inputs)
-        else:
-            delta_inp_nxd = None
+        delta_inp_nxd = (
+            FlowFieldFinderBase._nxd(delta_inputs)
+            if delta_inputs is not None
+            else None
+        )
         return (
             FlowFieldFinderBase._nxd(inputs),
             FlowFieldFinderBase._nxd(states),
@@ -85,17 +100,16 @@ class FlowFieldVisualizer(FlowFieldVisualizerBase):
         """Compute one page through the finder's public flow methods."""
         state_n = states_nxd[self.current_element_idx]
         inp_n = inp_nxd[self.current_element_idx]
-        if delta_inp_nxd is not None:
-            delta_inp_n = delta_inp_nxd[self.current_element_idx]
-        else:
-            delta_inp_n = None
+        delta_inp_n = (
+            delta_inp_nxd[self.current_element_idx]
+            if delta_inp_nxd is not None
+            else None
+        )
 
         finder = self.current_field()
         finder.num_points = self.preferences["grid_points"]
         finder.x_offset = self.view_span / 2.0
         finder.y_offset = self.view_span / 2.0
-        # Keep the finder grid exactly aligned with the viewport. Snapping
-        # this center causes gaps or apparent heatmap motion after panning.
         finder.x_center = (self.x_bounds[0] + self.x_bounds[1]) / 2.0
         finder.y_center = (self.y_bounds[0] + self.y_bounds[1]) / 2.0
 

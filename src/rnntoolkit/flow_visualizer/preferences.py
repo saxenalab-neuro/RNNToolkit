@@ -51,18 +51,40 @@ PREFERENCE = {
         "fmt": str,
     },
     "colormap": {
-        "choices": ("viridis", "cividis", "plasma", "magma", "inferno", "YlGnBu", "PuBuGn", "cubehelix", "Purples", "coolwarm"),
+        "choices": (
+            "viridis",
+            "cividis",
+            "plasma",
+            "magma",
+            "inferno",
+            "YlGnBu",
+            "PuBuGn",
+            "cubehelix",
+            "Purples",
+            "coolwarm",
+        ),
         "fmt": str,
     },
     "vector_colors": {
-        "choices": ("black", "viridis", "cividis", "plasma", "magma", "inferno", "YlGnBu", "PuBuGn", "cubehelix", "Purples", "coolwarm"),
+        "choices": (
+            "black",
+            "viridis",
+            "cividis",
+            "plasma",
+            "magma",
+            "inferno",
+            "YlGnBu",
+            "PuBuGn",
+            "cubehelix",
+            "Purples",
+            "coolwarm",
+        ),
         "fmt": str,
     },
     "show_heatmap": {"choices": ("off", "on"), "fmt": str},
     "show_contours": {"choices": ("off", "on"), "fmt": str},
     "show_vectors": {"choices": ("on", "off"), "fmt": str},
     "state_trajectory": {"choices": ("off", "on"), "fmt": str},
-    "cancel_other_regions": {"choices": ("off", "on"), "fmt": str},
     "trajectory_color": {
         "choices": ("black", "red", "blue", "green", "white"),
         "fmt": str,
@@ -99,7 +121,6 @@ PREF_LABELS = [
     ("show_contours", "Energy Contours"),
     ("show_vectors", "Show Vectors"),
     ("state_trajectory", "State Trajectory"),
-    ("cancel_other_regions", "Cancel Other Regions"),
     ("trajectory_color", "Trajectory Color"),
     ("trajectory_thickness", "Trajectory Thickness"),
     ("state_marker", "State Marker"),
@@ -117,6 +138,7 @@ class PreferencesPanel:
     Every row has minus and plus buttons. The visualizer's ``adjust_pref``
     method owns value changes and range checking; this class handles the UI.
     """
+
     def __init__(self, options_button: Button, app: Any) -> None:
         """Initialize the panel anchored to ``options_button`` for ``app``."""
         self.file = options_button
@@ -170,7 +192,6 @@ class PreferencesPanel:
             "show_contours",
             "show_vectors",
             "state_trajectory",
-            "cancel_other_regions",
         }
 
     def _value_rect(self, i: int) -> pygame.Rect:
@@ -238,7 +259,9 @@ class PreferencesPanel:
             if self._is_toggle(key):
                 value_rect = self._value_rect(i)
                 value_surface = self.value_font.render(value_str, True, DARK_GRAY)
-                screen.blit(value_surface, value_surface.get_rect(center=value_rect.center))
+                screen.blit(
+                    value_surface, value_surface.get_rect(center=value_rect.center)
+                )
             else:
                 pygame.draw.rect(screen, WHITE, minus_rect, border_radius=6)
                 pygame.draw.rect(screen, WHITE, plus_rect, border_radius=6)
@@ -248,7 +271,12 @@ class PreferencesPanel:
                 screen.blit(left_text, left_text.get_rect(center=minus_rect.center))
                 screen.blit(right_text, right_text.get_rect(center=plus_rect.center))
                 value_rect = pygame.Rect(
-                    minus_rect.right, row.top, plus_rect.left - minus_rect.right, row.height
+                    minus_rect.right,
+                    row.top,
+                    plus_rect.left - minus_rect.right,
+                    row.height,
                 )
                 value_surface = self.value_font.render(value_str, True, DARK_GRAY)
-                screen.blit(value_surface, value_surface.get_rect(center=value_rect.center))
+                screen.blit(
+                    value_surface, value_surface.get_rect(center=value_rect.center)
+                )

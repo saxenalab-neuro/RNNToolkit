@@ -177,6 +177,7 @@ class FlowFieldVisualizerBase:
         self.screen = pygame.display.set_mode(
             (WINDOW_WIDTH, WINDOW_HEIGHT), pygame.RESIZABLE
         )
+        self._layout_size = self.screen.get_size()
         pygame.display.set_caption("Flow Field Visualizer")
         self.clock = pygame.time.Clock()
 
@@ -242,6 +243,13 @@ class FlowFieldVisualizerBase:
         self.dragging = False
         self.drag_last_pos = None
 
+        # Page arrows advance once immediately, then repeat while held.
+        self._page_hold_direction = 0
+        self._page_hold_started_at = 0
+        self._page_last_repeat_at = 0
+        self._page_hold_delay_ms = 350
+        self._page_repeat_interval_ms = 100
+
     # ----------- Must be overrided by user -----------------------
 
     def build_finder(self, *args: Any, **kwargs: Any) -> Any:
@@ -264,6 +272,47 @@ class FlowFieldVisualizerBase:
         """Require the cached flow field to be recomputed before drawing."""
         self._flow_dirty = True
 
+    def _step_page(self, direction: int) -> None:
+        """Move one page in ``direction`` while respecting page bounds."""
+        new_index = max(
+            0,
+            min(self.n_pages - 1, self.current_element_idx + direction),
+        )
+        if new_index != self.current_element_idx:
+            self.current_element_idx = new_index
+            self._mark_dirty()
+
+    def _start_page_hold(self, direction: int) -> None:
+        """Start delayed page repetition after an initial arrow press."""
+        now = pygame.time.get_ticks()
+        self._page_hold_direction = direction
+        self._page_hold_started_at = now
+        self._page_last_repeat_at = now
+
+    def _stop_page_hold(self) -> None:
+        """Stop page repetition for a released or abandoned arrow press."""
+        self._page_hold_direction = 0
+
+    def _repeat_held_page_arrow(self) -> None:
+        """Advance pages at a fixed rate while an arrow remains held."""
+        direction = self._page_hold_direction
+        if not direction:
+            return
+
+        button = self.left_arrow_btn if direction < 0 else self.right_arrow_btn
+        if not button.is_pressed or not button.rect.collidepoint(pygame.mouse.get_pos()):
+            self._stop_page_hold()
+            return
+
+        now = pygame.time.get_ticks()
+        if now - self._page_hold_started_at < self._page_hold_delay_ms:
+            return
+        if now - self._page_last_repeat_at < self._page_repeat_interval_ms:
+            return
+
+        self._step_page(direction)
+        self._page_last_repeat_at = now
+
     # ----------- base class functionality -----------------------
 
     def _calculate_grid_area(self) -> None:
@@ -283,6 +332,29 @@ class FlowFieldVisualizerBase:
         left = (window_width - size) // 2
         top = top_bound + (available_height - size) // 2
         self.grid_area = pygame.Rect(left, top, size, size)
+
+    def _sync_window_layout(self) -> None:
+        """Update layout after SDL or the window manager changes the size.
+
+        Pygame 2 resizes a ``RESIZABLE`` display surface automatically. The
+        application must not call ``set_mode`` again from a resize event,
+        because doing so can recreate the native window while a window manager
+        owns the interactive-resize pointer grab. Polling the current display
+        surface also covers programmatic window-manager changes that different
+        platforms report through different SDL window events.
+        """
+        display_surface = pygame.display.get_surface()
+        if display_surface is None:
+            return
+
+        self.screen = display_surface
+        current_size = display_surface.get_size()
+        if current_size == self._layout_size:
+            return
+
+        self._layout_size = current_size
+        self._calculate_grid_area()
+        self._position_toolbar_controls()
 
     def _create_ui(self) -> None:
         """Create all buttons and popup controls."""
@@ -421,10 +493,6 @@ class FlowFieldVisualizerBase:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
-            elif event.type == pygame.VIDEORESIZE:
-                self.screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
-                self._calculate_grid_area()
-                self._position_toolbar_controls()
 
             pref_button_toggled = False
             any_button_consumed = False
@@ -448,14 +516,11 @@ class FlowFieldVisualizerBase:
                         )
                         self._mark_dirty()
                     elif button == self.left_arrow_btn:
-                        self.current_element_idx = max(0, self.current_element_idx - 1)
-                        self._mark_dirty()
+                        self._step_page(-1)
+                        self._start_page_hold(-1)
                     elif button == self.right_arrow_btn:
-                        self.current_element_idx = min(
-                            self.n_pages - 1,
-                            self.current_element_idx + 1,
-                        )
-                        self._mark_dirty()
+                        self._step_page(1)
+                        self._start_page_hold(1)
 
             if not pref_button_toggled:
                 self.preferences_panel.handle_event(event)
@@ -477,6 +542,7 @@ class FlowFieldVisualizerBase:
                     self.drag_last_pos = event.pos
 
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                self._stop_page_hold()
                 self.dragging = False
                 self.drag_last_pos = None
 
@@ -500,6 +566,9 @@ class FlowFieldVisualizerBase:
                 self.x_center += dx_data
                 self.y_center += dy_data
                 self._mark_dirty()
+
+        self._sync_window_layout()
+        self._repeat_held_page_arrow()
 
         self._update_bounds()
 

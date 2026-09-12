@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import time
 
 from .fp import FixedPointCollection
 from typing import Generic, TypeVar
@@ -11,6 +12,7 @@ class FixedPointFinderBase(Generic[RNN]):
     def __init__(
         self,
         rnn: RNN,
+        verbose: bool = False,
         **kwargs,
     ):
         """Creates a FixedPointFinder object.
@@ -28,6 +30,7 @@ class FixedPointFinderBase(Generic[RNN]):
         """
 
         self.device = next(rnn.parameters()).device
+        self.verbose = verbose
 
         self.rnn = rnn
         self.batch_first = self.rnn.batch_first
@@ -208,6 +211,7 @@ class FixedPointFinderBase(Generic[RNN]):
         Returns:
             fsp_non_outlier_distance (Tensor): indices to fps object that are not far
         """
+        # TODO make sure there is a warning if all fps are removed during this function
         # Centroid of initial_states, shape (n_states,)
         centroid = torch.mean(initial_states, dim=0)
 
@@ -239,3 +243,46 @@ class FixedPointFinderBase(Generic[RNN]):
         # Ensure proper device and dtype
         data = data.to(self.device)
         return data
+
+    def _print_if_verbose(self, *args, **kwargs):
+        if self.verbose:
+            print(*args, **kwargs)
+
+    @classmethod
+    def _print_iter_update(
+        cls,
+        iter_count: int,
+        t_start: float,
+        q: torch.Tensor,
+        dq: torch.Tensor,
+        lr: float,
+        is_final: bool = False,
+    ):
+        t = time.time()
+        t_elapsed = t - t_start
+        avg_iter_time = t_elapsed / iter_count
+
+        if is_final:
+            delimiter = "\n\t\t"
+            print("\t\t%d iters%s" % (iter_count, delimiter), end="")
+        else:
+            delimiter = ", "
+            print("\tIter: %d%s" % (iter_count, delimiter), end="")
+
+        if q.size == 1:
+            print("q = %.2e%sdq = %.2e%s" % (q, delimiter, dq, delimiter), end="")
+        else:
+            mean_q = torch.mean(q)
+            std_q = torch.std(q)
+
+            mean_dq = torch.mean(dq)
+            std_dq = torch.std(dq)
+
+            print(
+                "q = %.2e +/- %.2e%s"
+                "dq = %.2e +/- %.2e%s"
+                % (mean_q, std_q, delimiter, mean_dq, std_dq, delimiter),
+                end="",
+            )
+
+        print("avg iter time = %.2e sec" % avg_iter_time, end="")

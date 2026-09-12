@@ -67,10 +67,12 @@ Open The Interactive Visualizer
 
    from rnntoolkit import FlowFieldVisualizer
 
+   axes = torch.eye(states.shape[-1])
    visualizer = FlowFieldVisualizer(
        rnn,
        num_points=25,
-       fit_states=states,
+       axes=axes,
+       axis_labels=["unit 1", "unit 2", "unit 3", "unit 4"],
        flow_type="nonlinear",
    )
    visualizer.visualize(inputs, states)

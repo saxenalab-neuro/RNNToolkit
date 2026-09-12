@@ -9,70 +9,26 @@ from rnntoolkit.fixed_points.fp_finder_base import FixedPointFinderBase
 
 
 class FixedPointFinder(FixedPointFinderBase):
-    _default_hps = {
-        "lr_init": 1e-4,
-        "lr_patience": 5,
-        "lr_factor": 0.95,
-        "lr_cooldown": 0,
-        "tol_q": 1e-12,
-        "tol_dq": 1e-20,
-        "max_iters": 5000,
-        "do_rerun_q_outliers": False,
-        "outlier_q_scale": 10.0,
-        "do_exclude_distance_outliers": True,
-        "outlier_distance_scale": 10.0,
-        "tol_unique": 1e-3,
-        "max_n_unique": np.inf,
-        "dtype": "float32",
-        "random_seed": 0,
-        "verbose": True,
-        "super_verbose": False,
-        "n_iters_per_print_update": 100,
-    }
-
-    @classmethod
-    def default_hps(cls):
-        """Returns a deep copy of the default hyperparameters dict.
-
-        The deep copy protects against external updates to the defaults, which
-        in turn protects against unintended interactions with the hashing done
-        by the Hyperparameters class.
-
-        Args:
-            None.
-
-        Returns:
-            dict of hyperparameters.
-
-
-        """
-        return deepcopy(cls._default_hps)
-
     def __init__(
         self,
         rnn: nn.RNN,
-        lr_init: float = _default_hps["lr_init"],
-        lr_patience: float = _default_hps["lr_patience"],
-        lr_factor: float = _default_hps["lr_factor"],
-        lr_cooldown: float = _default_hps["lr_cooldown"],
-        tol_q: float = _default_hps["tol_q"],
-        tol_dq: float = _default_hps["tol_dq"],
-        max_iters: int = _default_hps["max_iters"],
-        do_rerun_q_outliers: bool = _default_hps["do_rerun_q_outliers"],
-        outlier_q_scale: float = _default_hps["outlier_q_scale"],
-        do_exclude_distance_outliers: bool = _default_hps[
-            "do_exclude_distance_outliers"
-        ],
-        outlier_distance_scale: float = _default_hps["outlier_distance_scale"],
-        tol_unique: float = _default_hps["tol_unique"],
-        max_n_unique: int = _default_hps["max_n_unique"],
-        dtype: str = _default_hps["dtype"],
-        random_seed: int = _default_hps["random_seed"],
-        verbose: bool = _default_hps["verbose"],
-        super_verbose: bool = _default_hps["super_verbose"],
-        n_iters_per_print_update: int = _default_hps["n_iters_per_print_update"],
+        lr_init: float = 1e-4,
+        tol_q: float = 1e-12,
+        tol_dq: float = 1e-20,
+        max_iters: int = 5000,
+        do_rerun_q_outliers: bool = False,
+        outlier_q_scale: float = 10.0,
+        do_exclude_distance_outliers: bool = True,
+        outlier_distance_scale: float = 10.0,
+        tol_unique: float = 1e-3,
+        max_n_unique: float = np.inf,
+        dtype: str = "float32",
+        random_seed: int = 0,
+        verbose: bool = False,
+        super_verbose: bool = False,
+        n_iters_per_print_update: int = 100,
     ):
-        super().__init__(rnn)
+        super().__init__(rnn, verbose)
         """Creates a FixedPointFinder object.
         Inherited from FixedPointFinderBase
 
@@ -132,9 +88,6 @@ class FixedPointFinder(FixedPointFinderBase):
         # *********************************************************************
 
         self.lr_init = lr_init
-        self.lr_patience = lr_patience
-        self.lr_factor = lr_factor
-        self.lr_cooldown = lr_cooldown
         self.tol_q = tol_q
         self.tol_dq = tol_dq
         self.max_iters = max_iters
@@ -144,7 +97,6 @@ class FixedPointFinder(FixedPointFinderBase):
         self.outlier_distance_scale = outlier_distance_scale
         self.tol_unique = tol_unique
         self.max_n_unique = max_n_unique
-        self.verbose = verbose
         self.super_verbose = super_verbose
         self.n_iters_per_print_update = n_iters_per_print_update
 
@@ -306,51 +258,6 @@ class FixedPointFinder(FixedPointFinderBase):
 
         return fps
 
-    def _print_if_verbose(self, *args, **kwargs):
-        if self.verbose:
-            print(*args, **kwargs)
-
-    @classmethod
-    def _print_iter_update(
-        cls,
-        iter_count: int,
-        t_start: float,
-        q: torch.Tensor,
-        dq: torch.Tensor,
-        lr: float,
-        is_final: bool = False,
-    ):
-        t = time.time()
-        t_elapsed = t - t_start
-        avg_iter_time = t_elapsed / iter_count
-
-        if is_final:
-            delimiter = "\n\t\t"
-            print("\t\t%d iters%s" % (iter_count, delimiter), end="")
-        else:
-            delimiter = ", "
-            print("\tIter: %d%s" % (iter_count, delimiter), end="")
-
-        if q.size == 1:
-            print("q = %.2e%sdq = %.2e%s" % (q, delimiter, dq, delimiter), end="")
-        else:
-            mean_q = torch.mean(q)
-            std_q = torch.std(q)
-
-            mean_dq = torch.mean(dq)
-            std_dq = torch.std(dq)
-
-            print(
-                "q = %.2e +/- %.2e%s"
-                "dq = %.2e +/- %.2e%s"
-                % (mean_q, std_q, delimiter, mean_dq, std_dq, delimiter),
-                end="",
-            )
-
-        print("learning rate = %.2e%s" % (lr, delimiter), end="")
-
-        print("avg iter time = %.2e sec" % avg_iter_time, end="")
-
     def _fp_optimization(
         self,
         initial_states: torch.Tensor,
@@ -479,7 +386,6 @@ class FixedPointFinder(FixedPointFinderBase):
 
         xstar = initial_states.detach().cpu()
         F_xstar = F_x_1xbxd.detach().cpu()
-        print(F_xstar.shape)
 
         # Indicate same n_iters for each initialization (i.e., joint optimization)
         n_iters = torch.tile(torch.tensor([iter_count]), dims=(F_xstar.shape[0],))
