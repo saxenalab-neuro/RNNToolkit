@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+
 from .fixed_points.fp_finder import FixedPointFinder
 from .fixed_points.fp_finder_base import FixedPointFinderBase
 from .fixed_points.fp import FixedPointCollection

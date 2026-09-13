@@ -40,7 +40,7 @@ Linearize Around A State
        inputs[0, 0], states[0, 0]
    )
    real_parts, imaginary_parts, eigenvectors = linearization.eigendecomposition(
-       inputs[0, 0], states[0, 0]
+       states[0, 0]
    )
 
 Compute A Nonlinear Flow Field

@@ -109,13 +109,14 @@ class Linearization:
         return _jacobian_h.squeeze(), _jacobian_input.squeeze()
 
     def eigendecomposition(
-        self, input: torch.Tensor, h: torch.Tensor
+        self, h: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Linearize the network and compute eigen decomposition.
 
+        The recurrent Jacobian is evaluated at a zero input with the RNN input width.
+
         Args:
-            input (torch.Tensor): 1D tensor representing the input for the network at state h
-            h (torch.Tensor): 1D tensor representing the desired state h for taylor expansion
+            h (torch.Tensor): 1D hidden state at which to evaluate the recurrent Jacobian
 
         Returns:
             torch.Tensor: Real parts of eigenvalues.
@@ -123,9 +124,9 @@ class Linearization:
             torch.Tensor: Eigenvectors stacked column-wise.
         """
         assert h.dim() == 1
-        assert input.dim() == 1
 
-        _jacobian, _ = self.jacobian(input, h)
+        zero_input = h.new_zeros(self.rnn.input_size)
+        _jacobian, _ = self.jacobian(zero_input, h)
         eigenvalues, eigenvectors = torch.linalg.eig(_jacobian)
 
         # Split real and imaginary parts

@@ -14,8 +14,9 @@ Linearization
 
 ``Linearization`` computes the Jacobians of one-step RNN dynamics with respect
 to hidden state and input. Its eigendecomposition exposes local modes around a
-chosen state. Supply one-dimensional input and hidden-state tensors to
-``jacobian`` and ``eigendecomposition``.
+chosen state. Supply one-dimensional input and hidden-state tensors to ``jacobian``.
+``eigendecomposition`` accepts only the hidden state and evaluates its recurrent
+Jacobian at zero input.
 
 Fixed Points
 ------------
