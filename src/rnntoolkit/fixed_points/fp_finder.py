@@ -5,13 +5,14 @@ import time
 from copy import deepcopy
 
 from .fp import FixedPointCollection
+from rnntoolkit.adapter import RNNAdapter
 from rnntoolkit.fixed_points.fp_finder_base import FixedPointFinderBase
 
 
 class FixedPointFinder(FixedPointFinderBase):
     def __init__(
         self,
-        rnn: nn.RNN,
+        rnn: nn.RNN | nn.GRU | nn.LSTM,
         lr_init: float = 1e-4,
         tol_q: float = 1e-12,
         tol_dq: float = 1e-20,
@@ -28,54 +29,39 @@ class FixedPointFinder(FixedPointFinderBase):
         super_verbose: bool = False,
         n_iters_per_print_update: int = 100,
     ):
-        super().__init__(rnn, verbose)
-        """Creates a FixedPointFinder object.
-        Inherited from FixedPointFinderBase
+        """Configure fixed-point optimization for RNN, GRU, or LSTM dynamics.
 
-        Optimization terminates once every initialization satisfies one or
-        both of the following criteria:
-            1. q < tol_q
-            2. dq < tol_dq * learning_rate
+        Optimization stops when each guess meets q < tol_q or
+        dq < tol_dq * learning_rate, or the iteration limit is reached.
 
         Args:
-            rnn_cell: A Pytorch RNN
-            tol_q (optional): A positive scalar specifying the optimization
-                termination criteria on each q-value. Default: 1e-12.
-            tol_dq (optional): A positive scalar specifying the optimization
-                termination criteria on the improvement of each q-value (i.e.,
-                "dq") from one optimization iteration to the next.
-            max_iters (optional): A non-negative integer specifying the
-                maximum number of gradient descent iterations allowed.
-            do_rerun_q_outliers (optional): A bool indicating whether or not
-                to run additional optimization iterations on putative outlier
-                states
-            outlier_q_scale (optional): A positive float specifying the q
-                value for putative outlier fixed points, relative to the median q
-                value across all identified fixed points. Default: 10.
-            do_exclude_distance_outliers (optional): A bool indicating
-                whether or not to discard states that are far away from the set
-                of initial states
-            outlier_distance_scale (optional): A positive float specifying a
-                normalized distance cutoff used to exclude distance outliers
-            tol_unique (optional): A positive scalar specifying the numerical
-                precision required to label two fixed points as being unique from
-                one another. 
-            max_n_unique (optional): A positive integer indicating the max
-                number of unique fixed points to keep.
-            dtype: string indicating the data type to use for all numerical ops
-                and objects. Default: 'float32'
-            random_seed: Seed for numpy random number generator. Default: 0.
-            verbose (optional): A bool indicating whether to print high-level
-                status updates. Default: True.
-            super_verbose (optional): A bool indicating whether or not to
-                print per-iteration updates during each optimization. Default:
-                False.
-            n_iters_per_print_update (optional): An int specifying how often
-                to print updates during the fixed point optimizations. Default:
-                100.
+            rnn: Single-layer, unidirectional nn.RNN, nn.GRU, or nn.LSTM
+                without projections. Either batch_first setting is supported.
+            lr_init: Initial Adam learning rate; default 1e-4.
+            tol_q: Residual objective convergence threshold; default 1e-12.
+            tol_dq: Objective-change threshold scaled by learning rate;
+                default 1e-20.
+            max_iters: Maximum optimization iterations; use a positive integer.
+            do_rerun_q_outliers: Whether to rerun optimization for high-q candidates.
+            outlier_q_scale: Multiplier on median q defining outliers for reruns.
+            do_exclude_distance_outliers: Whether to filter candidates far from
+                the original initial-state centroid.
+            outlier_distance_scale: Distance threshold normalized by the mean
+                initial-state distance from that centroid.
+            tol_unique: State/input distance tolerance for identifying duplicates.
+            max_n_unique: Maximum unique points retained; infinity keeps all.
+            dtype: Torch dtype name recorded as collection metadata, default
+                'float32'. Supply states/inputs matching model dtype and device.
+            random_seed: Seed for NumPy subsampling of excess unique points.
+                State sampling uses PyTorch's global random generator.
+            verbose: Print high-level progress when True; default False.
+            super_verbose: Print iteration updates when True and verbose is enabled.
+            n_iters_per_print_update: Number of iterations between progress updates.
         """
+        super().__init__(rnn, verbose)
 
         self.dtype = dtype
+        self.adapter = RNNAdapter(rnn)
         self.device = next(rnn.parameters()).device
         self.torch_dtype = getattr(torch, self.dtype)
 
@@ -106,27 +92,40 @@ class FixedPointFinder(FixedPointFinderBase):
 
     def find_fixed_points(
         self,
-        initial_states: torch.Tensor,
+        initial_states: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
         ext_inputs: torch.Tensor,
         n_rounds_q_opt: int = 1,
     ) -> tuple[FixedPointCollection, FixedPointCollection]:
-        """Finds RNN fixed points and the Jacobians at the fixed points.
+        """Optimize full states for nearly stationary one-step dynamics.
+
+        Minimizes q(s) = 0.5 * ||F(u, s) - s|| squared at a fixed input.
+        For LSTMs this objective includes both hidden and cell residuals.
 
         Args:
-            initial_states: Tensor specifying the initial
-                states of the RNN, from which the optimization will search for
-                fixed points.
-            ext_inputs: external inputs to the RNN
-            n_rounds_q_opt: Number of rounds to run extra iterations on q
-            outliers
+            initial_states: Initial guesses [N, D] (or a single [D] state),
+                with D = H for RNN/GRU and D = 2H for LSTM. LSTMs also
+                accept (h, c) tuples with matching [N, H] components.
+            ext_inputs: Shared constant input [I], or one input per guess
+                [N, I]. Each guess's input is held fixed during optimization.
+            n_rounds_q_opt: Maximum extra rounds for q outliers when enabled
+                by do_rerun_q_outliers.
 
         Returns:
-            unique_fps: A FixedPoints object containing the set of unique
-                fixed points after optimizing from all initial_states
-            all_fps: A FixedPoints object containing the likely redundant set
-                of fixed points (and associated metadata) resulting from ALL
-                initializations in initial_states
+            Pair (unique_fps, all_fps) of FixedPointCollection objects.
+            xstar, x_init, and F_xstar are packed [N, D] tensors, including
+            [h, c] for LSTMs. qstar is the residual objective evaluated at
+            the returned xstar. Filtering may leave no unique points.
+            Jacobians and stability are not computed here; use Linearization.
+
+        Note:
+            Reaching max_iters or a small objective change does not guarantee
+            a small residual; inspect qstar. The finder currently disables
+            requires_grad on model parameters and does not restore those flags.
+            Caller-provided initial state values are not modified.
         """
+
+        if not self.adapter.is_packed(initial_states):
+            initial_states = self.adapter.pack_state(initial_states)
 
         all_fps = self._fp_optimization(
             initial_states,
@@ -173,8 +172,15 @@ class FixedPointFinder(FixedPointFinderBase):
     def _exclude_distance_outliers(
         self, fps: FixedPointCollection, initial_states: torch.Tensor
     ) -> FixedPointCollection:
-        """Removes putative distance outliers from a set of fixed points.
-        See docstring for identify_distance_non_outliers(...).
+        """Filter packed fixed points by distance from the initial-state centroid.
+
+        Args:
+            fps: Candidate FixedPointCollection with packed states.
+            initial_states: Packed initial guesses [N, D].
+
+        Returns:
+            Collection retaining states within the configured normalized
+            distance threshold. Distances include both h and c for LSTMs.
         """
 
         idx_keep = self.get_fp_non_distance_outliers(
@@ -185,21 +191,15 @@ class FixedPointFinder(FixedPointFinderBase):
     def _run_additional_iterations_on_outliers(
         self, fps: FixedPointCollection, n_rounds: int = 1
     ) -> FixedPointCollection:
-        """Detects outlier states with respect to the q function and runs
-        additional optimization iterations on those states This should only be
-        used after calling either _run_joint_optimization or
-        _run_sequential_optimizations.
+        """Reoptimize candidates whose q exceeds the configured median-based cutoff.
 
         Args:
-            fps: A FixedPoints object containing (partially) optimized
-                fixed points and associated metadata.
-            stim_inp: additional stimulus to give network during optimization
-            W_rec: replaces self.mrnn.W_rec during forward pass
-            W_inp: replaces self.mrnn.W_inp during forward pass
+            fps: Collection containing packed states, inputs, qstar, and n_iters.
+            n_rounds: Maximum number of additional optimization rounds.
 
         Returns:
-            A FixedPoints object containing the further-optimized fixed points
-            and associated metadata.
+            Collection with outlier states and optimization metadata updated.
+            LSTM states remain packed throughout reruns.
         """
 
         assert fps.qstar is not None
@@ -263,35 +263,28 @@ class FixedPointFinder(FixedPointFinderBase):
         initial_states: torch.Tensor,
         ext_inp: torch.Tensor,
     ) -> FixedPointCollection:
-        """Finds multiple fixed points via a joint optimization over multiple
-        state vectors.
+        """Optimize a batch of packed state guesses using Adam.
 
         Args:
-            initial_states: Tensor specifying the initial
-                states of the RNN, from which the optimization will search for
-                fixed points.
-            ext_inp: Tensor specifying a set of constant
-                inputs into the RNN.
+            initial_states: Packed initial states [N, D], including [h, c]
+                for LSTM. Cloned into a separate optimization tensor.
+            ext_inp: Constant input [I] or inputs [N, I].
 
         Returns:
-            fps: A FixedPoints object containing the optimized fixed points
-            and associated metadata.
+            FixedPointCollection containing every optimized state. xstar,
+            F_xstar, qstar, and dq describe the final optimizer step; x_init
+            preserves the original guesses. The adapter handles native
+            hidden/cell shapes and the model's batch_first setting.
         """
 
-        # Get batch and time dims
-        if self.batch_first:
-            TIME_DIM = 1
-        else:
-            TIME_DIM = 0
-
-        initial_states = self._broadcast_nxd(initial_states, tile_n=1)
+        initial_states = self._broadcast_nxd(initial_states, tile_n=1).detach().clone()
+        x_init = initial_states.clone()
 
         # Get batch size of states
         n = initial_states.shape[0]
 
-        # Broadcast external input to [n, 1, d]
-        ext_inp = self._broadcast_nxd(ext_inp, tile_n=n)
-        ext_inp = ext_inp.unsqueeze(TIME_DIM)
+        # The adapter expects [batch, features] for both input and state.
+        ext_inp = self._broadcast_nxd(ext_inp, tile_n=n).detach()
 
         # assert the correct batch shapes
         assert ext_inp.shape[0] == initial_states.shape[0]
@@ -327,12 +320,7 @@ class FixedPointFinder(FixedPointFinderBase):
         while True:
             h = initial_states.clone()
 
-            # currently only works for 1 layer rnns
-            _, F_x_1xbxd = self.rnn(
-                ext_inp,
-                h.unsqueeze(0),
-            )
-            F_x_1xbxd = F_x_1xbxd.squeeze(0)
+            F_x_1xbxd = self.adapter(ext_inp, h)
 
             dx_bxd = h - F_x_1xbxd
             q_b = 0.5 * torch.sum(torch.square(dx_bxd), dim=-1)
@@ -384,16 +372,22 @@ class FixedPointFinder(FixedPointFinderBase):
                 iter_count, t_start, ev_q_b, ev_dq_b, iter_learning_rate, is_final=True
             )
 
+        # Report the map and residual at the returned (post-optimizer) state.
+        with torch.no_grad():
+            final_next = self.adapter(ext_inp, initial_states)
+            final_q = 0.5 * (initial_states - final_next).square().sum(dim=-1)
+            ev_dq_b = (final_q - q_b.detach()).abs().cpu()
+            ev_q_b = final_q.cpu()
         xstar = initial_states.detach().cpu()
-        F_xstar = F_x_1xbxd.detach().cpu()
+        F_xstar = final_next.cpu()
 
         # Indicate same n_iters for each initialization (i.e., joint optimization)
         n_iters = torch.tile(torch.tensor([iter_count]), dims=(F_xstar.shape[0],))
-        inputs_bxd = ext_inp.squeeze(TIME_DIM)
+        inputs_bxd = ext_inp
 
         fps = FixedPointCollection(
             xstar=xstar,
-            x_init=initial_states,
+            x_init=x_init.cpu(),
             inputs=inputs_bxd,
             F_xstar=F_xstar,
             qstar=ev_q_b,

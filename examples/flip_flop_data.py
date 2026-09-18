@@ -211,14 +211,5 @@ class FlipFlopData(object):
 
     @classmethod
     def _refresh_figs(cls):
-        """Refreshes all matplotlib figures.
-
-        Args:
-                None.
-
-        Returns:
-                None.
-        """
+        """Refreshes all matplotlib figures."""
         plt.ion()
-        plt.show()
-        plt.pause(1e-10)

@@ -11,11 +11,11 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 
-from model import Model
+from model import RNNModel, GRUModel, LSTMModel
 from flip_flop_data import FlipFlopData
 
 
-def train_FlipFlop():
+def train_FlipFlop(model_type):
     """Train an RNN to solve the N-bit memory task.
     Args:
         None.
@@ -38,20 +38,36 @@ def train_FlipFlop():
     data_gen = FlipFlopData()
     train_data = data_gen.generate_data(n_trials=n_train)
 
-    model = Model(n_bits, n_hidden, n_bits).to(device)
+    if model_type == "rnn":
+        model = RNNModel(n_bits, n_hidden, n_bits).to(device)
+    elif model_type == "gru":
+        model = GRUModel(n_bits, n_hidden, n_bits).to(device)
+    elif model_type == "lstm":
+        model = LSTMModel(n_bits, n_hidden, n_bits).to(device)
+    else:
+        raise ValueError
+
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     for epoch in range(epochs):
+
         running_loss = 0
         optimizer.zero_grad()
+
         # Gather inputs and targets
         input = torch.from_numpy(train_data["inputs"]).to(device)
         target = torch.from_numpy(train_data["targets"]).to(device)
 
         # forward pass through model
-        h0 = torch.zeros(size=(1, n_train, n_hidden)).to(device)
-        out, hn = model(input, h0)
+        if model_type == "rnn" or model_type == "gru":
+            hx = torch.zeros(size=(1, n_train, n_hidden)).to(device)
+        elif model_type == "lstm":
+            c0 = torch.zeros(size=(1, n_train, n_hidden)).to(device)
+            h0 = torch.zeros(size=(1, n_train, n_hidden)).to(device)
+            hx = (h0, c0)
+
+        out, _ = model(input, hx)
 
         # loss and update parameters
         loss_ = criterion(out, target)
@@ -60,21 +76,25 @@ def train_FlipFlop():
 
         running_loss += loss_.item()
 
-        if epoch % 10 == 0:
-            running_loss /= 10
+        if epoch % 1000 == 0:
+            running_loss /= 1000
             print(f"Epoch: {epoch}, Avg. Loss: {running_loss}")
             running_loss = 0
 
         # Save model
         torch.save(
             model.state_dict(),
-            "flip_flop_rnn.pth",
+            f"flip_flop_{model_type}.pth",
         )
 
 
 def main():
-    # Step 1: Train an RNN to solve the N-bit memory task
-    train_FlipFlop()
+    print("Training RNN...")
+    train_FlipFlop("rnn")
+    print("\nTraining GRU...")
+    train_FlipFlop("gru")
+    print("\nTraining LSTM...")
+    train_FlipFlop("lstm")
 
 
 if __name__ == "__main__":

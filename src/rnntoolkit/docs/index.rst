@@ -2,7 +2,8 @@ RNNToolkit
 ==========
 
 RNNToolkit provides focused PyTorch utilities for analyzing recurrent neural
-networks. It includes fixed-point discovery, local linearization, reduced
+networks: single-layer, unidirectional RNNs, GRUs, and non-projected LSTMs.
+LSTM analyses include both hidden and cell state. It includes fixed-point discovery, local linearization, reduced
 two-dimensional flow fields, and an interactive flow-field visualizer.
 
 Start with the getting-started guide if you are new to the package. Use the API

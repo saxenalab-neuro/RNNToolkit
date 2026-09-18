@@ -15,18 +15,16 @@ class FixedPointFinderBase(Generic[RNN]):
         verbose: bool = False,
         **kwargs,
     ):
-        """Creates a FixedPointFinder object.
-
-        Base class that can be overwritten for different types of RNNs
-        This is meant for running optimization on RNN states to find fixed points
-
-        Overwrite the find_fixed_points method to find fixed points for your
-        specific rnn.
-
-        Base methods include sampling states, identifying outliers, and broadcasting
+        """Initialize tensor-based helpers for a concrete fixed-point finder.
 
         Args:
-            rnn_cell: A Pytorch RNN
+            rnn: Recurrent module with parameters and a batch_first attribute.
+            verbose: Whether to print progress messages.
+            **kwargs: Reserved for subclasses.
+
+        Note:
+            Sampling, broadcasting, and distance helpers require packed tensors.
+            Native LSTM tuples are handled by the concrete find_fixed_points method.
         """
 
         self.device = next(rnn.parameters()).device
@@ -46,26 +44,19 @@ class FixedPointFinderBase(Generic[RNN]):
         noise_scale: float = 0.0,
         exclude_zero_tensors: bool = False,
     ) -> torch.Tensor:
-        """Draws random samples from trajectories of the RNN state. Samples
-        can optionally be corrupted by independent and identically distributed
-        (IID) Gaussian noise. These samples are intended to be used as initial
-        states for fixed point optimizations.
+        """Sample full states from recorded trajectories, with optional noise.
 
         Args:
-            state_traj: 1D or ND tensor containing
-                example trajectories of the RNN state.
-            n_inits: int specifying the number of sampled states to return.
-            noise_scale (optional): non-negative float specifying the standard
-                deviation of IID Gaussian noise samples added to the sampled
-                states.
-            exclude_zero_tensors (bool, optional): whether to exclude zeros
-                tensors that may be in state_traj
+            state_traj: Tensor [D] or [..., D]. Pack LSTM (h, c) trajectories
+                first so corresponding hidden and cell states are sampled together.
+            n_inits: Number of initial states sampled with replacement.
+            noise_scale: Standard deviation of independent Gaussian noise;
+                use a non-negative value. Zero leaves samples unperturbed.
+            exclude_zero_tensors: Exclude rows whose every component is zero.
 
         Returns:
-            initial_states: Sampled RNN states as a [n_inits x n_states] tensor
-
-        Raises:
-            ValueError if noise_scale is negative.
+            Packed initial guesses [n_inits, D]. Leading trajectory dimensions
+            are flattened before sampling. There must be at least one eligible row.
         """
         if state_traj.dim() == 1:
             state_traj = state_traj.unsqueeze(0)
@@ -101,19 +92,15 @@ class FixedPointFinderBase(Generic[RNN]):
     def _add_gaussian_noise(
         self, data: torch.Tensor, noise_scale: float = 0.0
     ) -> torch.Tensor:
-        """Adds IID Gaussian noise to Numpy data.
+        """Add independent Gaussian noise to a tensor without unpacking its states.
 
         Args:
-            data: Tensor
-            noise_scale: (Optional) non-negative scalar indicating the
-                standard deviation of the Gaussian noise samples to be generated.
-                Default: 0.0.
+            data: Tensor of packed samples.
+            noise_scale: Non-negative noise standard deviation; zero returns data.
 
         Returns:
-            Tensor matching shape of data with noise added
-
-        Raises:
-            ValueError if noise_scale is negative.
+            Tensor of the same shape. Noise currently uses CPU/default-dtype
+            allocation; the documented example workflow uses float32 CPU states.
         """
 
         # Add IID Gaussian noise

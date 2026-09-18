@@ -1,23 +1,54 @@
 import torch
 import torch.nn as nn
+from typing import Tuple
 from rnntoolkit.linear import Linearization
 from rnntoolkit.flow_fields.flow_field import FlowField
 from rnntoolkit.flow_fields.flow_field_finder_base import FlowFieldFinderBase
+from rnntoolkit.adapter import RNNAdapter
 
 
 class FlowFieldFinder(FlowFieldFinderBase):
     def __init__(
         self,
-        rnn: nn.RNN,
+        rnn: nn.RNN | nn.GRU | nn.LSTM,
         num_points: int = 10,
         x_offset: int = 1,
         y_offset: int = 1,
         x_center: float = 0.0,
         y_center: float = 0.0,
-        fit_states: torch.Tensor | None = None,
+        fit_states: torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None = None,
         axes: torch.Tensor | None = None,
         follow_traj: bool = False,
     ):
+        """Configure two-dimensional flow analysis for an RNN, GRU, or LSTM.
+
+        State width D is H for RNN/GRU and 2H for LSTM. PCA and explicit
+        axes operate on the complete state, including the LSTM cell state.
+
+        Args:
+            rnn: Single-layer, unidirectional nn.RNN, nn.GRU, or nn.LSTM
+                without projections. Either batch_first setting is accepted.
+            num_points: Grid samples per axis; each field has num_points squared points.
+            x_offset: Grid half-width along the first reduced axis.
+            y_offset: Grid half-width along the second reduced axis.
+            x_center: Fixed grid center on the first reduced axis.
+            y_center: Fixed grid center on the second reduced axis.
+            fit_states: Optional PCA fitting data [..., D], or an LSTM tuple
+                with matching [..., H] components. Without fitting data,
+                the first flow call fits PCA on its states. PCA requires
+                at least two samples and two state features.
+            axes: Optional projection matrix [2, D]; overrides PCA for
+                projection and uses a pseudoinverse to reconstruct states.
+            follow_traj: Center each grid on its projected state when True;
+                otherwise use x_center and y_center.
+
+        Note:
+            The PCA path uses scikit-learn; supply detached CPU states.
+            Custom axes for LSTMs must have width 2H.
+        """
+        self.adapter = RNNAdapter(rnn)
+        if fit_states is not None and not self.adapter.is_packed(fit_states):
+            fit_states = self.adapter.pack_state(fit_states)
         super().__init__(
             rnn=rnn,
             num_points=num_points,
@@ -28,20 +59,6 @@ class FlowFieldFinder(FlowFieldFinderBase):
             fit_states=fit_states,
             axes=axes,
         )
-        """
-        Flow Field Finder that gathers a flow field about a specified trajectory
-        Inherited from FlowFieldFinder base, which provides basic structure and utilities
-
-        Args:
-            rnn (nn.RNN): RNN object, more architectures coming soon
-            num_points (int): number of points to use in grid, results in (num_points, num_points)
-            x_offset (int): scale to offset grid about trajectory in x direction
-            y_offset (int): scale to offset grid about trajectory in y direction
-            x_center (int): x position to offset from using x_offset
-            h_center (int): y position to offset from using y_offset
-            follow_traj (bool): whether or not to center the grid around each state or use 
-                default grid locations
-        """
 
         self.follow_traj = follow_traj
 
@@ -50,26 +67,31 @@ class FlowFieldFinder(FlowFieldFinderBase):
 
     def find_nonlinear_flow(
         self,
-        states: torch.Tensor,
+        states: torch.Tensor | Tuple,
         inp: torch.Tensor,
     ) -> list:
-        """Compute 2D flow fields at each given state
-
-        Projects selected region activity onto a 2D PCA subspace, constructs a grid
-        around the current point, and advances the system by one step to estimate
-        the local flow (velocity vectors).
+        """Compute projected one-step displacements on a grid for each sample.
 
         Args:
-            states (torch.Tensor): Hidden activations over time, can be batched or 1D
-            inp (torch.Tensor): External input sequence, can be batched or 1D, but
-                the total number of inputs (batch elements) must match that of states
+            states: State tensor [D] or [..., D]. LSTMs also accept (h, c)
+                tuples with matching [..., H] components. Packed LSTM
+                tensors use [h, c] order. Leading dimensions are flattened.
+            inp: Inputs [I] or [..., I], with one input per flattened state.
+                A single input is not automatically repeated across states.
 
         Returns:
-            list: FlowField object per sampled state
+            List of FlowField objects in flattened sample order. Each contains
+            grid coordinates [P, P, 2], displacements x_vels/y_vels [P, P],
+            and speeds [P, P] normalized by the largest speed in that field,
+            where P is num_points. These are projected displacements, not
+            the full-state speed or an energy function.
         """
 
         flow_field_list = []
 
+        # pack if lstm is used
+        if not self.adapter.is_packed(states):
+            states = self.adapter.pack_state(states)
         # Reshape to nxd
         states, inp = self._nxd(states), self._nxd(inp)
 
@@ -106,9 +128,9 @@ class FlowFieldFinder(FlowFieldFinderBase):
             with torch.no_grad():
                 # Current timestep input
                 # Get activity for current timestep
-                _, h = self.rnn(
-                    full_inp_batch.unsqueeze(self.time_dim),
-                    inverse_grid.unsqueeze(0),
+                h = self.adapter(
+                    full_inp_batch,
+                    inverse_grid,
                 )
 
             # Reduce h_next
@@ -129,29 +151,31 @@ class FlowFieldFinder(FlowFieldFinderBase):
 
     def find_linear_flow(
         self,
-        states: torch.Tensor,
+        states: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
         inp: torch.Tensor,
         delta_inp: torch.Tensor,
     ) -> list:
-        """Compute linearized flow fields in a 2D subspace.
-
-        Similar to :func:`flow_field`, but uses a local linear approximation (Jacobian)
-        of the dynamics around points on the trajectory instead of a full forward
-        step.
+        """Compute flow fields using a local affine approximation at each state.
 
         Args:
-            states (torch.Tensor): Hidden activations over time for selected regions,
-                can be 1D or batched
-            inp (torch.Tensor): External input sequence, can be batched or 1D, but
-                the total number of inputs (batch elements) must match that of states
-            delta_inp (torch.Tensor): External input sequence of input perturbations,
-                can be batched or 1D, but the total number of inputs (batch elements)
-                must match that of states, and the overall shape must match inp
+            states: Reference states [D] or [..., D], or LSTM (h, c) tuples
+                with matching [..., H] components. Packed states use [h, c].
+            inp: Reference inputs [I] or [..., I], one per flattened state.
+            delta_inp: Input perturbations with the same shape as inp.
 
         Returns:
-            list: FlowField objects per sampled time.
+            List of FlowField objects, one per flattened reference state,
+            with the same shapes and speed normalization as nonlinear flow.
+            Linearization advances the entire LSTM state before projection.
+
+        Note:
+            A stable-looking two-dimensional projection does not establish
+            full-state stability. Inspect the full Jacobian eigenvalues.
         """
 
+        # pack if lstm is used
+        if not self.adapter.is_packed(states):
+            states = self.adapter.pack_state(states)
         # reshape to nxd
         states, inp, delta_inp = self._nxd(states), self._nxd(inp), self._nxd(delta_inp)
 

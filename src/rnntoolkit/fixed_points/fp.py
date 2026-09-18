@@ -6,7 +6,12 @@ from typing import Self
 
 class FixedPointCollection:
     """
-    A class for storing fixed points and associated data.
+    Store packed fixed points and optimization metadata.
+
+    State fields xstar, x_init, and F_xstar have shape [N, D]. D is H
+    for RNN/GRU and 2H for LSTM, with feature order [h, c]. Tuple states
+    are not accepted. Collections do not compute or store Jacobians or
+    eigenvalues automatically; use Linearization on individual states.
     """
 
     """ List of class attributes that represent data corresponding to fixed
@@ -47,8 +52,10 @@ class FixedPointCollection:
         verbose: bool = False,
     ):
         """
-        Initializes a FixedPoints object with all input arguments as class
-        properties.
+        Initialize a collection of packed state tensors and optional metadata.
+
+        LSTM state fields must concatenate [h, c] along the last dimension;
+        n_states then counts both hidden and cell features.
 
         Args:
 

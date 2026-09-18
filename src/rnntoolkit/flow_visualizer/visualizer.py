@@ -1,8 +1,8 @@
 from collections.abc import Sequence
-from typing import Any
 
 import pygame
 import torch
+import torch.nn as nn
 from rnntoolkit.flow_fields.flow_field import FlowField
 from rnntoolkit.flow_fields.flow_field_finder import FlowFieldFinder
 from rnntoolkit.flow_fields.flow_field_finder_base import FlowFieldFinderBase
@@ -14,11 +14,15 @@ pygame.init()
 
 
 class FlowFieldVisualizer(AxisSelectionMixin, FlowFieldVisualizerBase):
-    """Interactive two-dimensional viewer for an RNN's flow field."""
+    """Interactive two-dimensional viewer for RNN, GRU, or LSTM dynamics.
+
+    Supply packed state tensors to visualize: width H for RNN/GRU and
+    2H for LSTM in [h, c] order. The viewer does not pack trajectory tuples.
+    """
 
     def __init__(
         self,
-        rnn: Any,
+        rnn: nn.RNN | nn.GRU | nn.LSTM,
         num_points: int = 10,
         x_offset: int = 5,
         y_offset: int = 5,
@@ -32,14 +36,15 @@ class FlowFieldVisualizer(AxisSelectionMixin, FlowFieldVisualizerBase):
         """Initialize the concrete RNNToolkit flow-field visualizer.
 
         Args:
-            rnn: Recurrent module whose hidden dynamics will be visualized.
+            rnn: Single-layer, unidirectional RNN/GRU/LSTM without projections.
             num_points: Number of grid samples along each displayed axis.
             x_offset: Initial half-width of the x-axis data window.
             y_offset: Initial half-width of the y-axis data window.
             x_center: Initial x-axis center in reduced coordinates.
             y_center: Initial y-axis center in reduced coordinates.
-            fit_states: Hidden states used to fit PCA when ``axes`` is omitted.
-            axes: Optional axis bank with shape ``[N, hidden_size]``, where
+            fit_states: Packed states [..., D] used to fit PCA when axes is omitted.
+                D is H for RNN/GRU and 2H for LSTM in [h, c] order.
+            axes: Optional axis bank with shape ``[N, D]``, where
                 ``N >= 2``. The first two axes are selected initially.
             flow_type: Either ``"nonlinear"`` or ``"linear"``.
             axis_labels: Optional display names for the axes. Its length must
@@ -79,7 +84,18 @@ class FlowFieldVisualizer(AxisSelectionMixin, FlowFieldVisualizerBase):
         states: torch.Tensor,
         delta_inputs: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        """Flatten RNNToolkit inputs and states into page-aligned samples."""
+        """Flatten inputs and packed trajectories into one sample per page.
+
+        Args:
+            inputs: Input tensor [I] or [..., I].
+            states: Packed state tensor [D] or [..., D], with D = 2H for
+                LSTM. Pack (h, c) tuples before passing them to the viewer.
+            delta_inputs: Optional perturbations aligned with inputs.
+
+        Returns:
+            Inputs [N, I], states [N, D], and perturbations [N, I] or None.
+            Inputs and states must have matching sample counts.
+        """
         delta_inp_nxd = (
             FlowFieldFinderBase._nxd(delta_inputs)
             if delta_inputs is not None
@@ -97,7 +113,17 @@ class FlowFieldVisualizer(AxisSelectionMixin, FlowFieldVisualizerBase):
         states_nxd: torch.Tensor,
         delta_inp_nxd: torch.Tensor | None = None,
     ) -> FlowField:
-        """Compute one page through the finder's public flow methods."""
+        """Compute and cache the current page's projected flow field.
+
+        Args:
+            inp_nxd: Reference inputs [N, I].
+            states_nxd: Packed states [N, D], including [h, c] for LSTMs.
+            delta_inp_nxd: Optional input perturbations [N, I]; linear mode
+                uses zero perturbations when omitted.
+
+        Returns:
+            FlowField for the current page and selected two-axis projection.
+        """
         state_n = states_nxd[self.current_element_idx]
         inp_n = inp_nxd[self.current_element_idx]
         delta_inp_n = (

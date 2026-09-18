@@ -8,6 +8,7 @@ inheritance information.
 .. toctree::
    :maxdepth: 2
 
+   rnntoolkit.adapter
    rnntoolkit.fixed_points
    rnntoolkit.linear
    rnntoolkit.flow_fields

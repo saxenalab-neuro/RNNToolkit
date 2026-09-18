@@ -21,23 +21,22 @@ class FlowFieldFinderBase(Generic[RNN]):
         axes: torch.Tensor | None = None,
         **kwargs,
     ):
-        """
-        Flow field that gathers a flow field about a specified trajectory
+        """Initialize projection and grid helpers for a concrete flow finder.
 
-        This class is meant to be inherited only by very specific users who are designing
-        custom RNNs and would like a base structure to go off of
-
-        Typical users training RNNs or mRNNs should only use the FlowFieldFinder or
-        mFlowFieldFinder classes provided by the packages
+        This base class accepts packed tensors only; subclasses handle native
+        state structures and implement the recurrent update.
 
         Args:
-            rnn (RNN): RNN-like object
-            num_points (int): number of points to use in grid, results in (num_points, num_points)
-            x_offset (int): scale to offset grid about trajectory in x direction
-            y_offset (int): scale to offset grid about trajectory in y direction
-            x_center (int): x position to offset from using x_offset
-            h_center (int): y position to offset from using y_offset
-            axes (tensor): 2 x N tensor containing two axes to project onto
+            rnn: Recurrent module with parameters and a batch_first attribute.
+            num_points: Samples per grid axis.
+            x_offset: Half-width on the first reduced axis.
+            y_offset: Half-width on the second reduced axis.
+            x_center: Center on the first reduced axis.
+            y_center: Center on the second reduced axis.
+            fit_states: Optional packed PCA data [..., D], where D includes
+                both h and c for LSTMs. Use detached CPU tensors for PCA.
+            axes: Optional projection matrix [2, D], used instead of PCA.
+            **kwargs: Reserved for subclass configuration.
         """
         self.rnn = rnn
         self.fit_states = fit_states
@@ -64,8 +63,11 @@ class FlowFieldFinderBase(Generic[RNN]):
             self.inverse_axes = torch.linalg.pinv(self.axes)
 
     def transform(self, x):
-        """
-        Helper function that calls either PCA transform or axes transform
+        """Project packed samples [N, D] into coordinates [N, 2].
+
+        Uses explicit axes when supplied; otherwise fits PCA on x if not yet
+        fitted, then transforms x. Returns a tensor for explicit axes and a
+        NumPy array for PCA. LSTM tuples must be packed before calling.
         """
         if self.axes is not None:
             return x @ self.axes.T
@@ -77,8 +79,11 @@ class FlowFieldFinderBase(Generic[RNN]):
             return self.reduce_obj.transform(x)
 
     def inverse_transform(self, x):
-        """
-        Helper function that calls either PCA transform or axes transform
+        """Reconstruct packed states [N, D] from coordinates [N, 2].
+
+        Uses the explicit-axis pseudoinverse or fitted PCA inverse. Returns
+        a tensor for axes and a NumPy array for PCA. For LSTMs, reconstructed
+        states contain both h and c; this does not return a tuple.
         """
         if self.inverse_axes is not None:
             return x @ self.inverse_axes.T
@@ -95,11 +100,10 @@ class FlowFieldFinderBase(Generic[RNN]):
 
     @staticmethod
     def _nxd(x: torch.Tensor) -> torch.Tensor:
-        """
-        Broadcast to nxd, even for a 1d tensor
+        """Flatten tensor [..., D] to [N, D], treating [D] as one sample.
 
-        Args:
-            x (Tensor): tensor to broadcast
+        This helper does not pack LSTM tuples. All leading dimensions are
+        sample dimensions; native layer dimensions must be handled by callers.
         """
         if x.dim() == 1:
             x = x.unsqueeze(0)
@@ -107,11 +111,10 @@ class FlowFieldFinderBase(Generic[RNN]):
         return x
 
     def _fit_traj(self, trajectory: torch.Tensor):
-        """
-        Fit PCA object
+        """Fit two-component PCA on detached CPU packed states [..., D].
 
-        Args:
-            trajectory (Tensor): states to reduce
+        Flattens leading dimensions. LSTM tuples must be packed first, so
+        PCA sees all 2H state features. Requires at least two samples/features.
         """
         # Gather activity for specified region and cell type
         temp_act = torch.reshape(trajectory, (-1, trajectory.shape[-1]))
@@ -119,14 +122,10 @@ class FlowFieldFinderBase(Generic[RNN]):
         self.reduce_obj.fit(temp_act)
 
     def _reduce_traj(self, trajectory: torch.Tensor) -> torch.Tensor:
-        """
-        Fit PCA object and transform trajectory
+        """Flatten and project packed states [..., D] to a tensor [N, 2].
 
-        Args:
-            trajectory (Tensor): states to reduce
-
-        Returns:
-            Tensor: reduced states
+        Uses explicit axes or PCA (fitting it on these states if necessary).
+        The result uses the model dtype. LSTM tuples are not accepted here.
         """
         # Gather activity for specified region and cell type
         temp_act = torch.reshape(trajectory, (-1, trajectory.shape[-1]))
@@ -143,18 +142,19 @@ class FlowFieldFinderBase(Generic[RNN]):
         upper_bound_y: float,
         expand_dims: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Obtain a low dimensional grid and its projection to higher dim state
-        space
+        """Create a two-dimensional grid and reconstruct full packed states.
 
         Args:
-            lower_bound_x (float): lower bound of grid in x direction
-            upper_bound_x (float): upper bound of grid in x direction
-            lower_bound_y (float): lower bound of grid in y direction
-            upper_bound_y (float): upper bound of grid in y direction
+            lower_bound_x: Minimum first-axis coordinate.
+            upper_bound_x: Maximum first-axis coordinate.
+            lower_bound_y: Minimum second-axis coordinate.
+            upper_bound_y: Maximum second-axis coordinate.
+            expand_dims: Return grid-shaped arrays instead of flattened samples.
 
         Returns:
-            tuple: the low dimensional and projected low dimensional grid
+            Coordinates [P*P, 2] and packed states [P*P, D], where P is
+            num_points. With expand_dims, shapes are [P, P, 2] and [P, P, D].
+            LSTM reconstructed states use [h, c] order.
         """
         # Num points is along each axis, not in total
         x = torch.linspace(lower_bound_x, upper_bound_x, self.num_points)
@@ -185,13 +185,17 @@ class FlowFieldFinderBase(Generic[RNN]):
     def _compute_velocity(
         self, h_next: torch.Tensor, h_prev: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """compute velocity, or h_next - h_prev"""
+        """Return x/y one-step displacements between projected [..., 2] states."""
         x_vel = h_next[..., 0] - h_prev[..., 0]
         y_vel = h_next[..., 1] - h_prev[..., 1]
         return x_vel, y_vel
 
     def _compute_speed(self, x_vel: torch.Tensor, y_vel: torch.Tensor) -> torch.Tensor:
-        """compute magnitude of velocities"""
+        """Return Euclidean projected speed divided by its maximum in this field.
+
+        This is a relative visualization scale, not the full-state residual.
+        The current normalization is undefined for an entirely zero-speed field.
+        """
         speed = torch.sqrt(x_vel**2 + y_vel**2)
         return speed / speed.max()
 
@@ -229,11 +233,13 @@ class FlowFieldFinderBase(Generic[RNN]):
         return lower_bound_x, upper_bound_x, lower_bound_y, upper_bound_y
 
     def _set_tv_bounds(self, traj: torch.Tensor) -> Tuple[float, float, float, float]:
-        """
-        Design grid bounds centered at the state traj using the offsets
+        """Return grid bounds centered on a projected two-component state.
 
         Args:
-            traj (Tensor): state to center grid at
+            traj: Reduced state [2], not a full hidden or packed LSTM state.
+
+        Returns:
+            Lower/upper x bounds and lower/upper y bounds, rounded to one decimal.
         """
         lower_bound_x = torch.round(traj[0] - self.x_offset, decimals=1).item()
         upper_bound_x = torch.round(traj[0] + self.x_offset, decimals=1).item()

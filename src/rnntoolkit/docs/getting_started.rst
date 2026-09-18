@@ -4,17 +4,22 @@ Getting Started
 Installation
 ------------
 
-Install the package from the repository root in editable mode while developing:
+Use Python 3.11+ for the current source tree (which uses typing.Self).
+Install runtime dependencies explicitly; current package metadata is incomplete.
+From the repository root:
 
 .. code-block:: bash
 
+   pip install torch numpy scikit-learn matplotlib pygame
    pip install -e .
 
 Create And Run An RNN
 ---------------------
 
-RNNToolkit analyzes standard PyTorch recurrent modules. Configure the module
-with ``batch_first=True`` so trajectories use ``[batch, time, features]``.
+The tools support single-layer, unidirectional RNN/GRU/LSTM modules without
+LSTM projections. This example uses batch_first=True for trajectories shaped
+[batch, time, features]; either layout is supported by the adapter.
+For a GRU, replace nn.RNN with nn.GRU and omit nonlinearity.
 
 .. code-block:: python
 
@@ -28,7 +33,8 @@ with ``batch_first=True`` so trajectories use ``[batch, time, features]``.
    )
    inputs = torch.randn(8, 30, 2)
    h0 = torch.zeros(1, 8, 4)
-   states, final_state = rnn(inputs, h0)
+   with torch.no_grad():
+       states, final_state = rnn(inputs, h0)
 
 Run An Analysis
 ---------------
@@ -44,6 +50,14 @@ local Jacobians around one input and hidden state:
    recurrent_jacobian, input_jacobian = linearization.jacobian(
        inputs[0, 0], states[0, 0]
    )
+
+LSTM States
+-----------
+
+LSTMs need both h and c. Their packed analysis state is [h, c] with width
+2 * hidden_size. Main analysis methods accept packed tensors or native tuples;
+sampling, projection helpers, and visualizer trajectories require packed tensors.
+See :doc:`user_guide` for the complete contract and :doc:`examples` for rollout.
 
 Next Steps
 ----------

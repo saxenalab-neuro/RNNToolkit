@@ -1,11 +1,14 @@
+[project]
+name = "rnntoolkit"
+version = "0.1.0"
+dynamic = ["dependencies"]
+
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[project]
-name = "rnntoolkit"
-version = "0.1.0"
-dependencies = ["matplotlib>=3.5"]
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools]
 package-dir = {"" = "src"}
