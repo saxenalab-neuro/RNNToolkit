@@ -11,6 +11,7 @@ class Linearization:
     packed [h, c] tensors or (h, c) tuples; all state outputs are packed.
     Jacobians include the full hidden/cell coupling for LSTMs.
     """
+
     def __init__(
         self,
         rnn: nn.RNN | nn.GRU | nn.LSTM,
@@ -89,11 +90,7 @@ class Linearization:
             # Get h_next for affine function
             next_state = self.adapter(input, state)
 
-        h_pert = (
-            next_state
-            + delta_state @ _jacobian.T
-            + (_jacobian_inp @ delta_input)
-        )
+        h_pert = next_state + delta_state @ _jacobian.T + (_jacobian_inp @ delta_input)
 
         return h_pert
 
@@ -120,13 +117,15 @@ class Linearization:
         assert input.dim() == 1
 
         with torch.no_grad():
-            _jacobian_input, _jacobians_h = torch.autograd.functional.jacobian(self.adapter.step, (input, state))
+            _jacobian_input, _jacobians_h = torch.autograd.functional.jacobian(
+                self.adapter.step, (input, state)
+            )
 
         # Preserve matrix dimensions even for a single input or state feature.
         return _jacobians_h, _jacobian_input
 
     def eigendecomposition(
-        self, state: torch.Tensor | Tuple
+        self, input: torch.Tensor, state: torch.Tensor | Tuple
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute eigenvalues and eigenvectors of the state Jacobian at zero input.
 
@@ -148,8 +147,7 @@ class Linearization:
         if not self.adapter.is_packed(state):
             state = self.adapter.pack_state(state)
 
-        zero_input = state.new_zeros(self.rnn.input_size)
-        _jacobian, _ = self.jacobian(zero_input, state)
+        _jacobian, _ = self.jacobian(input, state)
         eigenvalues, eigenvectors = torch.linalg.eig(_jacobian)
 
         return eigenvalues.real, eigenvalues.imag, eigenvectors
