@@ -50,9 +50,12 @@ def test_inverse_grid_shapes_match_num_points():
     assert inv_grid.shape == (16, 2)
 
 
-def test_transforms_use_axes_when_given():
+@pytest.mark.parametrize("batched", [False, True])
+def test_transforms_use_axes_when_given(batched):
     rnn = nn.RNN(input_size=2, hidden_size=3, batch_first=True, nonlinearity="tanh")
     fit_states = torch.tensor([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])
+    if batched:
+        fit_states = fit_states.unsqueeze(0)
     axes = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     states = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     low_dim_states = torch.tensor([[7.0, 8.0], [9.0, 10.0]])
@@ -66,10 +69,13 @@ def test_transforms_use_axes_when_given():
         axes=axes,
     )
 
-    assert torch.allclose(finder.transform(states), states[:, :2])
+    mean = torch.full((3,), 10.0 / 3)
+    assert torch.allclose(finder.fit_states_mean, mean)
+    assert torch.allclose(finder.transform(states), (states - mean)[:, :2])
+    assert torch.allclose(finder.transform(mean.unsqueeze(0)), torch.zeros(1, 2))
     assert torch.allclose(
         finder.inverse_transform(low_dim_states),
-        torch.tensor([[7.0, 8.0, 0.0], [9.0, 10.0, 0.0]]),
+        torch.tensor([[7.0, 8.0, 0.0], [9.0, 10.0, 0.0]]) + mean,
     )
 
 

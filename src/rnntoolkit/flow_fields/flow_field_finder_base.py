@@ -12,12 +12,12 @@ class FlowFieldFinderBase(Generic[RNN]):
     def __init__(
         self,
         rnn: RNN,
+        fit_states: torch.Tensor,
         num_points: int,
         x_offset: int,
         y_offset: int,
         x_center: float = 0.0,
         y_center: float = 0.0,
-        fit_states: torch.Tensor | None = None,
         axes: torch.Tensor | None = None,
         **kwargs,
     ):
@@ -36,6 +36,7 @@ class FlowFieldFinderBase(Generic[RNN]):
             fit_states: Optional packed PCA data [..., D], where D includes
                 both h and c for LSTMs. Use detached CPU tensors for PCA.
             axes: Optional projection matrix [2, D], used instead of PCA.
+                Centers states on the mean of fit_states when provided.
             **kwargs: Reserved for subclass configuration.
         """
         self.rnn = rnn
@@ -52,15 +53,17 @@ class FlowFieldFinderBase(Generic[RNN]):
         self.axes = None
         self.inverse_axes = None
 
-        if fit_states is not None:
+        if axes is None:
             # if not done here, do on the trajectory in find_flow
             self._fit_traj(self.fit_states)
-
-        if axes is not None:
+        else:
             # assert two axes are present
             assert axes.dim() == 2 and axes.shape[0] == 2
             self.axes = axes.to(dtype=self.dtype)
             self.inverse_axes = torch.linalg.pinv(self.axes)
+            self.fit_states_mean = (
+                self._nxd(self.fit_states).to(self.axes).mean(dim=0)
+            )
 
     def transform(self, x):
         """Project packed samples [N, D] into coordinates [N, 2].
@@ -70,7 +73,7 @@ class FlowFieldFinderBase(Generic[RNN]):
         NumPy array for PCA. LSTM tuples must be packed before calling.
         """
         if self.axes is not None:
-            return x @ self.axes.T
+            return (x - self.fit_states_mean) @ self.axes.T
         else:
             try:
                 check_is_fitted(self.reduce_obj)
@@ -86,7 +89,7 @@ class FlowFieldFinderBase(Generic[RNN]):
         states contain both h and c; this does not return a tuple.
         """
         if self.inverse_axes is not None:
-            return x @ self.inverse_axes.T
+            return x @ self.inverse_axes.T + self.fit_states_mean
         else:
             return self.reduce_obj.inverse_transform(x)
 

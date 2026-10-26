@@ -11,12 +11,12 @@ class FlowFieldFinder(FlowFieldFinderBase):
     def __init__(
         self,
         rnn: nn.RNN | nn.GRU | nn.LSTM,
+        fit_states: torch.Tensor,
         num_points: int = 10,
         x_offset: int = 1,
         y_offset: int = 1,
         x_center: float = 0.0,
         y_center: float = 0.0,
-        fit_states: torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None = None,
         axes: torch.Tensor | None = None,
         follow_traj: bool = False,
     ):
@@ -47,16 +47,16 @@ class FlowFieldFinder(FlowFieldFinderBase):
             Custom axes for LSTMs must have width 2H.
         """
         self.adapter = RNNAdapter(rnn)
-        if fit_states is not None and not self.adapter.is_packed(fit_states):
+        if self.adapter.is_packed(fit_states):
             fit_states = self.adapter.pack_state(fit_states)
         super().__init__(
             rnn=rnn,
+            fit_states=fit_states,
             num_points=num_points,
             x_offset=x_offset,
             y_offset=y_offset,
             x_center=x_center,
             y_center=y_center,
-            fit_states=fit_states,
             axes=axes,
         )
 
