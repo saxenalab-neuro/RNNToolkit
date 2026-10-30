@@ -46,10 +46,10 @@ def test_linearization_matches_finite_differences(cls):
     torch.manual_seed(2)
     model = cls(1, 1, batch_first=True).double()
     adapter = RNNAdapter(model)
-    lin = Linearization(model)
     state = torch.randn(adapter.state_size, dtype=torch.double)
     inp = torch.randn(1, dtype=torch.double)
-    jac, jac_inp = lin.jacobian(inp, state)
+    lin = Linearization(model, inp, state)
+    jac, jac_inp = lin.jac_rec, lin.jac_inp
     assert jac.shape == (adapter.state_size, adapter.state_size)
     assert jac_inp.shape == (adapter.state_size, 1)
     eps = 1e-6
@@ -62,7 +62,7 @@ def test_linearization_matches_finite_differences(cls):
     torch.testing.assert_close(jac_inp[:, 0], expected_inp, atol=1e-8, rtol=1e-5)
     delta_state = torch.full((3, adapter.state_size), 1e-5, dtype=torch.double)
     delta_input = torch.full_like(inp, 1e-5)
-    approximate = lin(inp, state, delta_input, delta_state)
+    approximate = lin(delta_input, delta_state)
     actual = adapter((inp + delta_input).expand(3, -1), state + delta_state)
     torch.testing.assert_close(approximate, actual, atol=1e-8, rtol=1e-5)
 

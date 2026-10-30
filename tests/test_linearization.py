@@ -1,4 +1,3 @@
-from unittest.mock import Mock
 import torch
 import torch.nn as nn
 
@@ -11,11 +10,11 @@ def test_jacobian_matches_weighted_activation_grad():
     rnn.weight_ih_l0 = nn.Parameter(torch.tensor([[1.0, 0.0], [0.0, -1.0]]))
     rnn.bias_hh_l0 = nn.Parameter(torch.tensor([0.0, 0.0]))
     rnn.bias_ih_l0 = nn.Parameter(torch.tensor([0.0, 0.0]))
-    linearization = Linearization(rnn)
     h = torch.tensor([0.2, -0.1])
     x = torch.tensor([1.0, 1.0])
+    linearization = Linearization(rnn, x, h)
 
-    jac, jac_inp = linearization.jacobian(x, h)
+    jac, jac_inp = linearization.jac_rec, linearization.jac_inp
 
     expected_diag = torch.tensor([[1.0, 0.0], [0.0, 0.0]])
     expected_jac = expected_diag @ rnn.weight_hh_l0
@@ -31,9 +30,10 @@ def test_eigenvalues_match_expected():
     rnn.weight_ih_l0 = nn.Parameter(torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
     rnn.bias_hh_l0 = nn.Parameter(torch.tensor([0.0, 0.0]))
     rnn.bias_ih_l0 = nn.Parameter(torch.tensor([0.0, 0.0]))
-    linearization = Linearization(rnn)
     h = torch.tensor([0.2, -0.1])
-    reals, ims, _ = linearization.eigendecomposition(h)
+    linearization = Linearization(rnn, torch.zeros(2), h)
+    reals = linearization.jac_rec_real_eigs
+    ims = linearization.jac_rec_im_eigs
 
     eigenvalues, _ = torch.linalg.eig(rnn.weight_hh_l0)
 
@@ -52,19 +52,30 @@ def test_eigenvalues_match_expected():
     assert torch.allclose(ims, _ims)
 
 
-def test_eigendecomposition_builds_zero_input_from_hidden_state():
-    rnn = nn.RNN(input_size=3, hidden_size=2, batch_first=True).double()
-    linearization = Linearization(rnn)
-    linearization.jacobian = Mock(
-        return_value=(torch.eye(2, dtype=torch.float64), torch.zeros(2, 3))
-    )
+def test_eigendecomposition_uses_reference_input_and_preserves_precision():
+    rnn = nn.RNN(
+        input_size=3, hidden_size=2, batch_first=True, nonlinearity="relu"
+    ).double()
+    with torch.no_grad():
+        rnn.weight_hh_l0.copy_(torch.diag(torch.tensor([0.5, 0.25])))
+        rnn.weight_ih_l0.copy_(torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]))
+        rnn.bias_hh_l0.zero_()
+        rnn.bias_ih_l0.zero_()
     h = torch.tensor([0.2, -0.1], dtype=torch.float64)
+    x = torch.tensor([-1.0, 1.0, 0.0], dtype=torch.float64)
+    linearization = Linearization(rnn, x, h)
 
-    linearization.eigendecomposition(h)
-
-    zero_input, jacobian_h = linearization.jacobian.call_args.args
-    assert zero_input.shape == (rnn.input_size,)
-    assert zero_input.dtype == h.dtype
-    assert zero_input.device == h.device
-    assert torch.count_nonzero(zero_input) == 0
-    assert jacobian_h is h
+    # This input switches which ReLU unit is active compared with zero input.
+    expected = torch.tensor([0.0, 0.25], dtype=torch.float64)
+    torch.testing.assert_close(linearization.jac_rec_real_eigs, expected)
+    torch.testing.assert_close(linearization.jac_rec_im_eigs, torch.zeros_like(expected))
+    eigenvectors = linearization.jac_rec_eigvecs
+    assert eigenvectors.dtype == torch.complex128
+    assert eigenvectors.device == h.device
+    eigenvalues = torch.complex(
+        linearization.jac_rec_real_eigs, linearization.jac_rec_im_eigs
+    )
+    torch.testing.assert_close(
+        linearization.jac_rec.to(eigenvectors.dtype) @ eigenvectors,
+        eigenvectors * eigenvalues,
+    )

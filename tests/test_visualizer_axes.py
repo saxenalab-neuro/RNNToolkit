@@ -106,7 +106,9 @@ class TestVisualizerAxes(unittest.TestCase):
         rnn = torch.nn.RNN(2, 3, batch_first=True)
         axes = torch.eye(3)
 
-        visualizer = FlowFieldVisualizer(rnn, axes=axes, axis_labels=["x", "y", "z"])
+        visualizer = FlowFieldVisualizer(
+            rnn, fit_states=torch.eye(3), axes=axes, axis_labels=["x", "y", "z"]
+        )
 
         self.assertIsInstance(visualizer.preferences_panel, AxesPreferencesPanel)
         self.assertTrue(torch.equal(visualizer.current_field().axes, axes[:2]))

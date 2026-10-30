@@ -47,7 +47,7 @@ class FlowFieldFinder(FlowFieldFinderBase):
             Custom axes for LSTMs must have width 2H.
         """
         self.adapter = RNNAdapter(rnn)
-        if self.adapter.is_packed(fit_states):
+        if not self.adapter.is_packed(fit_states):
             fit_states = self.adapter.pack_state(fit_states)
         super().__init__(
             rnn=rnn,
@@ -62,8 +62,6 @@ class FlowFieldFinder(FlowFieldFinderBase):
 
         self.follow_traj = follow_traj
 
-        # Need to define a valid linearization object in each child of FlowFieldFinderBase
-        self.linearization = Linearization(self.rnn)
 
     def find_nonlinear_flow(
         self,
@@ -195,6 +193,8 @@ class FlowFieldFinder(FlowFieldFinderBase):
             inp_n = inp[n]
             delta_inp_n = delta_inp[n]
 
+            self.linearization = Linearization(self.rnn, inp_n, states_n)
+
             # If follow trajectory is true get grid centered around current t
             # This will make a different grid for each state (n grids)
             if self.follow_traj:
@@ -219,7 +219,7 @@ class FlowFieldFinder(FlowFieldFinderBase):
 
             with torch.no_grad():
                 # call forward method for linearization to get affine transformation
-                h = self.linearization(inp_n, states_n, delta_inp_n, delta_h)
+                h = self.linearization(delta_inp_n, delta_h)
 
             # Put next h into a grid format
             h_next = self._reduce_traj(h)
