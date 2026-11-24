@@ -109,7 +109,7 @@ def test_transforms_use_pca_fit_states_without_axes():
     )
 
 
-def test_find_nonlinear_flow_fits_pca_from_states_when_no_fit_states_or_axes():
+def test_find_nonlinear_flow_fits_pca_from_states_when_no_axes():
     rnn = nn.RNN(input_size=2, hidden_size=3, batch_first=True, nonlinearity="tanh")
     states = torch.tensor(
         [
@@ -122,14 +122,11 @@ def test_find_nonlinear_flow_fits_pca_from_states_when_no_fit_states_or_axes():
     inp = torch.zeros(states.shape[0], 2)
     finder = FlowFieldFinder(
         rnn,
+        fit_states=states,
         num_points=3,
         x_offset=1,
         y_offset=1,
-        fit_states=None,
     )
-
-    with pytest.raises(NotFittedError):
-        check_is_fitted(finder.reduce_obj)
 
     finder.find_nonlinear_flow(states, inp)
 
@@ -152,14 +149,11 @@ def test_find_linear_flow_fits_pca_from_states_when_no_fit_states_or_axes():
     delta_inp = torch.zeros_like(inp)
     finder = FlowFieldFinder(
         rnn,
+        fit_states=states,
         num_points=3,
         x_offset=1,
         y_offset=1,
-        fit_states=None,
     )
-
-    with pytest.raises(NotFittedError):
-        check_is_fitted(finder.reduce_obj)
 
     finder.find_linear_flow(states, inp, delta_inp)
 

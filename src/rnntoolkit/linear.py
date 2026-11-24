@@ -15,6 +15,10 @@ class Linearization:
     def __init__(
         self,
         rnn: nn.RNN | nn.GRU | nn.LSTM,
+        input: torch.Tensor,
+        state: torch.Tensor,
+        gramian_k: int = 10,
+        gramian_tol: float = 1e-3,
     ):
         """Initialize the differentiable one-step adapter.
 
@@ -23,13 +27,23 @@ class Linearization:
                 Projected LSTMs are not supported. Tensors must match the
                 module's device and dtype.
         """
+        assert state.dim() == 1
+        assert input.dim() == 1
+
         self.rnn = rnn
         self.adapter = RNNAdapter(self.rnn)
+        self.input = input
+        self.state = state
+        self.jac_rec, self.jac_inp = self._jacobian()
+        self.jac_rec_real_eigs, self.jac_rec_im_eigs, self.jac_rec_eigvecs = (
+            self._eigendecomposition()
+        )
+        self.gramian_k = gramian_k
+        self.gramian_tol = gramian_tol
+        self.ctrl_gramian = self._controllability_gramian()
 
     def __call__(
         self,
-        input: torch.Tensor,
-        state: torch.Tensor | Tuple,
         delta_input: torch.Tensor,
         delta_h: torch.Tensor,
     ) -> torch.Tensor:
@@ -46,12 +60,10 @@ class Linearization:
             Packed predicted next states [D] or [N, D], with leading
             perturbation dimensions flattened into N samples.
         """
-        return self.forward(input, state, delta_input, delta_h)
+        return self.forward(delta_input, delta_h)
 
     def forward(
         self,
-        input: torch.Tensor,
-        state: torch.Tensor | Tuple,
         delta_input: torch.Tensor,
         delta_state: torch.Tensor | Tuple,
     ) -> torch.Tensor:
@@ -70,8 +82,8 @@ class Linearization:
         """
 
         # pack states if not done already
-        if not self.adapter.is_packed(state):
-            state = self.adapter.pack_state(state)
+        if not self.adapter.is_packed(self.state):
+            self.state = self.adapter.pack_state(self.state)
 
         if not self.adapter.is_packed(delta_state):
             delta_state = self.adapter.pack_state(delta_state)
@@ -83,20 +95,17 @@ class Linearization:
         if delta_state.dim() > 1:
             delta_state = delta_state.flatten(start_dim=0, end_dim=-2)
 
-        # Get jacobians
-        _jacobian, _jacobian_inp = self.jacobian(input, state)
-
         with torch.no_grad():
             # Get h_next for affine function
-            next_state = self.adapter(input, state)
+            next_state = self.adapter(self.input, self.state)
 
-        h_pert = next_state + delta_state @ _jacobian.T + (_jacobian_inp @ delta_input)
+        h_pert = (
+            next_state + delta_state @ self.jac_rec.T + (self.jac_inp @ delta_input)
+        )
 
         return h_pert
 
-    def jacobian(
-        self, input: torch.Tensor, state: torch.Tensor | Tuple
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def _jacobian(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Differentiate the full one-step state update at (input, state).
 
         Args:
@@ -110,23 +119,21 @@ class Linearization:
             with respect to both current h and current c.
         """
 
-        if not self.adapter.is_packed(state):
-            state = self.adapter.pack_state(state)
+        if not self.adapter.is_packed(self.state):
+            self.state = self.adapter.pack_state(self.state)
 
-        assert state.dim() == 1
-        assert input.dim() == 1
+        assert self.state.dim() == 1
+        assert self.input.dim() == 1
 
         with torch.no_grad():
             _jacobian_input, _jacobians_h = torch.autograd.functional.jacobian(
-                self.adapter.step, (input, state)
+                self.adapter.step, (self.input, self.state)
             )
 
         # Preserve matrix dimensions even for a single input or state feature.
         return _jacobians_h, _jacobian_input
 
-    def eigendecomposition(
-        self, input: torch.Tensor, state: torch.Tensor | Tuple
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _eigendecomposition(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute eigenvalues and eigenvectors of the state Jacobian at zero input.
 
         Args:
@@ -144,10 +151,26 @@ class Linearization:
             torch.linalg.eig to the returned state Jacobian.
         """
 
-        if not self.adapter.is_packed(state):
-            state = self.adapter.pack_state(state)
-
-        _jacobian, _ = self.jacobian(input, state)
-        eigenvalues, eigenvectors = torch.linalg.eig(_jacobian)
+        eigenvalues, eigenvectors = torch.linalg.eig(self.jac_rec)
 
         return eigenvalues.real, eigenvalues.imag, eigenvectors
+
+    def _controllability_gramian(self) -> torch.Tensor:
+        """Sum A^m B B.T (A.T)^m for at most ``gramian_k`` terms.
+
+        Stop when the largest absolute entry of the change is below
+        ``gramian_tol``. Store that absolute change as ``gramian_diff``
+        (a float), including when the term limit is reached. With no
+        terms, return a zero matrix and leave ``gramian_diff`` infinite.
+        """
+        gramian = torch.zeros_like(self.jac_rec)
+        propagated_input = self.jac_inp
+        self.gramian_diff = float("inf")
+        for _ in range(self.gramian_k):
+            next_gramian = gramian + propagated_input @ propagated_input.T
+            self.gramian_diff = (next_gramian - gramian).abs().max().item()
+            gramian = next_gramian
+            if self.gramian_diff < self.gramian_tol:
+                break
+            propagated_input = self.jac_rec @ propagated_input
+        return gramian

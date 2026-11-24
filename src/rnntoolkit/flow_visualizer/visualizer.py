@@ -23,12 +23,12 @@ class FlowFieldVisualizer(AxisSelectionMixin, FlowFieldVisualizerBase):
     def __init__(
         self,
         rnn: nn.RNN | nn.GRU | nn.LSTM,
+        fit_states: torch.Tensor,
         num_points: int = 10,
         x_offset: int = 5,
         y_offset: int = 5,
         x_center: float = 0.0,
         y_center: float = 0.0,
-        fit_states: torch.Tensor | None = None,
         axes: torch.Tensor | None = None,
         flow_type: str = "nonlinear",
         axis_labels: Sequence[str] | None = None,
@@ -97,9 +97,7 @@ class FlowFieldVisualizer(AxisSelectionMixin, FlowFieldVisualizerBase):
             Inputs and states must have matching sample counts.
         """
         delta_inp_nxd = (
-            FlowFieldFinderBase._nxd(delta_inputs)
-            if delta_inputs is not None
-            else None
+            FlowFieldFinderBase._nxd(delta_inputs) if delta_inputs is not None else None
         )
         return (
             FlowFieldFinderBase._nxd(inputs),

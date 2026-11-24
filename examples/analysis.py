@@ -55,7 +55,7 @@ def collect_trajectories(model, inputs):
         state = adapter(timestep_input, state)
         trajectories.append(state)
     trajectories = torch.stack(trajectories, dim=1)
-    hidden = trajectories[..., :adapter.hidden_size]
+    hidden = trajectories[..., : adapter.hidden_size]
     print(trajectories.shape)
     return model.out_layer(hidden), trajectories
 
@@ -119,14 +119,21 @@ def plot_flow_fields(flows, projected_states, *, linear=False, stability=None):
             continue
         flow = flows[index]
         ax.quiver(
-            flow.grid[..., 0], flow.grid[..., 1], flow.x_vels, flow.y_vels,
-            flow.speeds, cmap="viridis", alpha=0.85,
+            flow.grid[..., 0],
+            flow.grid[..., 1],
+            flow.x_vels,
+            flow.y_vels,
+            flow.speeds,
+            cmap="viridis",
+            alpha=0.85,
         )
         if linear:
             stable = stability[index]
             ax.scatter(
-                *projected_states[index], color="blue" if stable else "red",
-                marker="o" if stable else "x", s=50,
+                *projected_states[index],
+                color="blue" if stable else "red",
+                marker="o" if stable else "x",
+                s=50,
             )
             ax.set_title(f"Fixed point {index + 1}")
         else:
@@ -139,7 +146,7 @@ def plot_flow_fields(flows, projected_states, *, linear=False, stability=None):
     return fig
 
 
-def analyze_stability(rnn, states):
+def analyze_stability(rnn, zero_inputs, states):
     """Classify fixed points using the full zero-input state Jacobian.
 
     Args:
@@ -152,13 +159,15 @@ def analyze_stability(rnn, states):
         requires all magnitudes below one. Unit-magnitude modes are marginal
         and are not included among the unstable eigenvectors.
     """
-    linearization = Linearization(rnn)
     stability, unstable_vectors = [], []
     for state in states:
-        real, imaginary, vectors = linearization.eigendecomposition(state)
-        magnitudes = torch.sqrt(real.square() + imaginary.square())
+        linearization = Linearization(rnn, zero_inputs[0, 0], state)
+        magnitudes = torch.sqrt(
+            linearization.jac_rec_real_eigs.square()
+            + linearization.jac_rec_im_eigs.square()
+        )
         stability.append(bool(torch.all(magnitudes < 1)))
-        unstable_vectors.append(vectors[:, magnitudes > 1])
+        unstable_vectors.append(linearization.jac_rec_eigvecs[:, magnitudes > 1])
     return np.asarray(stability), unstable_vectors
 
 
@@ -195,7 +204,9 @@ def plot_unstable_alignment(finder, states, unstable_vectors):
         for vector in vectors.T:
             plane = torch.stack((vector.real, vector.imag), dim=1)
             basis, singular_values, _ = torch.linalg.svd(plane, full_matrices=False)
-            tolerance = max(plane.shape) * torch.finfo(plane.dtype).eps * singular_values[0]
+            tolerance = (
+                max(plane.shape) * torch.finfo(plane.dtype).eps * singular_values[0]
+            )
             basis = basis[:, singular_values > tolerance]
             alignments.append(torch.linalg.vector_norm(directions @ basis, dim=1))
         closest = torch.stack(alignments).max(dim=0).values.clamp(0, 1)
@@ -205,11 +216,15 @@ def plot_unstable_alignment(finder, states, unstable_vectors):
     fig, ax = plt.subplots()
     ax.plot(indices, mean_angles, marker="o")
     ax.set(
-        title="Alignment with unstable modes", xlabel="Fixed point",
-        ylabel="Mean nearest-mode angle (degrees)", ylim=(0, 90),
+        title="Alignment with unstable modes",
+        xlabel="Fixed point",
+        ylabel="Mean nearest-mode angle (degrees)",
+        ylim=(0, 90),
     )
     if not indices:
-        ax.text(0.5, 0.5, "No unstable modes found", transform=ax.transAxes, ha="center")
+        ax.text(
+            0.5, 0.5, "No unstable modes found", transform=ax.transAxes, ha="center"
+        )
     return fig
 
 
@@ -269,21 +284,34 @@ def run_analysis(checkpoint, max_iters=35000, output_dir=None, *, model_class=RN
 
     print("Finding zero-input fixed points...")
     finder = FixedPointFinder(
-        model.rnn, tol_unique=1e-1, tol_q=1e-10, tol_dq=1e-18, lr_init=0.01,
-        max_iters=max_iters, verbose=True,
+        model.rnn,
+        tol_unique=1e-1,
+        tol_q=1e-10,
+        tol_dq=1e-18,
+        lr_init=0.01,
+        max_iters=max_iters,
+        verbose=True,
     )
     initial_states = finder.sample_states(trajectories, n_inits=128, noise_scale=0.25)
     unique_fps, all_fps = finder.find_fixed_points(initial_states, torch.zeros(n_bits))
     print("Unique fixed points:", unique_fps.n)
     if unique_fps.n == 0:
-        raise RuntimeError("No fixed points remain after filtering; cannot analyze them.")
+        raise RuntimeError(
+            "No fixed points remain after filtering; cannot analyze them."
+        )
     states = unique_fps.xstar
     finish_figure(plot_fixed_points(states, trajectories), "02_fixed_points")
 
     print("Computing nonlinear flow fields...")
     nonlinear_finder = FlowFieldFinder(
-        model.rnn, fit_states=trajectories, num_points=25,
-        x_offset=2, y_offset=2, x_center=0, y_center=0, follow_traj=False,
+        model.rnn,
+        fit_states=trajectories,
+        num_points=25,
+        x_offset=2,
+        y_offset=2,
+        x_center=0,
+        y_center=0,
+        follow_traj=False,
     )
     zero_inputs = torch.zeros_like(inputs)
     nonlinear_flows = nonlinear_finder.find_nonlinear_flow(trajectories, zero_inputs)
@@ -293,15 +321,20 @@ def run_analysis(checkpoint, max_iters=35000, output_dir=None, *, model_class=RN
     )
 
     print("Analyzing fixed-point eigenvalues...")
-    stability, unstable_vectors = analyze_stability(model.rnn, states)
+    stability, unstable_vectors = analyze_stability(model.rnn, zero_inputs, states)
     print(f"Stable fixed points: {stability.sum()} / {len(states)}")
     finish_figure(plot_fixed_points(states, trajectories, stability), "04_stability")
 
     print("Computing linear flow fields around fixed points...")
     linear_finder = FlowFieldFinder(
-        model.rnn, fit_states=states if len(states) >= 2 else trajectories,
-        num_points=15, x_offset=0.5, y_offset=0.5,
-        x_center=0, y_center=0, follow_traj=True,
+        model.rnn,
+        fit_states=states if len(states) >= 2 else trajectories,
+        num_points=15,
+        x_offset=0.5,
+        y_offset=0.5,
+        x_center=0,
+        y_center=0,
+        follow_traj=True,
     )
     fixed_point_inputs = torch.zeros(len(states), n_bits)
     linear_flows = linear_finder.find_linear_flow(
@@ -309,8 +342,10 @@ def run_analysis(checkpoint, max_iters=35000, output_dir=None, *, model_class=RN
     )
     finish_figure(
         plot_flow_fields(
-            linear_flows[:9], linear_finder.transform(states),
-            linear=True, stability=stability,
+            linear_flows[:9],
+            linear_finder.transform(states),
+            linear=True,
+            stability=stability,
         ),
         "05_linear_flow",
     )
@@ -322,7 +357,6 @@ def run_analysis(checkpoint, max_iters=35000, output_dir=None, *, model_class=RN
 
 
 def main():
-
     """Analyze the RNN, GRU, and LSTM checkpoints sequentially.
 
     Reads flip_flop_rnn.pth, flip_flop_gru.pth, and flip_flop_lstm.pth
